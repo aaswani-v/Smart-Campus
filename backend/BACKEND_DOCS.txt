@@ -1,0 +1,236 @@
+================================================================================
+SMART CAMPUS BACKEND: COMPLETE TECHNICAL DOCUMENTATION
+================================================================================
+Version: 1.0.0
+Author: Smart Campus AI Team
+Location: /backend root
+
+This document provides a comprehensive, structured, and deep-dive overview of the
+entire backend system for the Smart Campus Attendance & Attention Tracking App.
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+Chapter 1: System Overview & Architecture
+Chapter 2: Core Application Entry Point (main.py)
+Chapter 3: API Routing & RESTful Interface (api/routes.py)
+Chapter 4: Database Modeling & Persistence (models/database.py)
+Chapter 5: Face Recognition Engineering (services/face_recognition.py & models/face_model.py)
+Chapter 6: Attention Tracking & Computer Vision (services/attention.py)
+Chapter 7: Biometric & Multi-Factor Verification (services/biometric.py)
+Chapter 8: Data Storage & Management (data/ directory)
+Chapter 9: Installation, Deployment & Scalability
+
+================================================================================
+CHAPTER 1: SYSTEM OVERVIEW & ARCHITECTURE
+================================================================================
+
+The Smart Campus backend is a high-performance, asynchronous Python-based system built
+with FastAPI. It serves as the intelligent brain of the smart campus ecosystem, 
+integrating Computer Vision (CV), Deep Learning, and Real-time Biometrics.
+
+Key Components:
+1. Web Framework: FastAPI (Asynchronous, High Performance)
+2. Database: SQLite with SQLAlchemy ORM (Relational, SQL-based)
+3. Computer Vision: OpenCV, MediaPipe, Face-Recognition, and YOLOv8
+4. Real-time Communication: WebSockets (for live video feed analysis)
+5. Multi-factor Auth: Face + Fingerprint/RFID simulation
+
+System Architecture Flow:
+The frontend (React/Vite) communicates with the backend via two primary channels:
+- REST API: For CRUD operations (Students, Courses, Analytics)
+- WebSocket: For low-latency data streams (Face Recognition, Attention analysis)
+
+================================================================================
+CHAPTER 2: CORE APPLICATION ENTRY POINT (main.py)
+================================================================================
+
+File Path: backend/main.py
+Primary Responsibility: Application Initialization, WebSocket Handling, Middleware
+
+[Detailed File Information]
+This file serves as the kernel of the backend. It coordinates the initialization
+of services and defines the high-level routing structure.
+
+Key Features:
+- CORS Configuration: Allows interaction from frontend (localhost:5173).
+- Service Singletons: Initializes FaceRecognitionService, BiometricService, and 
+  AttentionTracker for global reuse.
+- WebSocket Endpoint (/api/face-recognition/ws): 
+    The most critical path for real-time operation. It receives base64-encoded 
+    video frames from the client, decodes them, passes them to the face_service 
+    and attention_tracker, and emits recognition results + attention metrics 
+    within milliseconds.
+- Health Checks: Standard root endpoint for system heartbeat.
+
+Technical Logic:
+When a frame arrives via WebSocket:
+1. Metadata parsing: Extracts session_id.
+2. Image Decoding: Converts base64 string to a NumPy array for OpenCV.
+3. Face Analysis: Calls `face_service.recognize_from_image(image)`.
+4. Result Feedback: Sends a JSON response back to the client containing 
+   recognized student IDs and their confidence scores.
+
+================================================================================
+CHAPTER 3: API ROUTING & RESTFUL INTERFACE (api/routes.py)
+================================================================================
+
+File Path: backend/api/routes.py
+Primary Responsibility: Business Logic, Secondary Data Access, Multi-Factor Auth
+
+[Detailed File Information]
+This is the largest code file in the backend (over 700 lines). It contains the
+implementation of the RESTful logic for the entire system.
+
+Chapter Fragments:
+Section A: Student Enrollment (@router.post("/students/enroll"))
+- Logic: Validates student ID uniqueness, expects at least 3 photos.
+- Processing: Decodes uploaded files, calls the enrollment service to train 
+  the LBPH model, and stores the student profile in the SQL database.
+
+Section B: Attendance Marking (@router.post("/attendance/mark"))
+- Multi-factor logic: Implements the system's "High Security" mode.
+- Requires Face + (Fingerprint OR RFID) to mark a student "Present".
+- Integrity: Verifies that a student is only marked once per session.
+
+Section C: Analytics Dashboard (@router.get("/analytics/dashboard"))
+- Aggregation: Performs SQL queries to calculate class attendance averages,
+  total students active, and system-wide attention trends.
+
+Section D: Radar Synchronization (@router.get("/analytics/radar/{session_id}"))
+- Geometry: Calculates simulated "radar positions" for students in a classroom
+  based on their seating (simulated) and their latest attention logs.
+
+================================================================================
+CHAPTER 4: DATABASE MODELING & PERSISTENCE (models/database.py)
+================================================================================
+
+File Path: backend/models/database.py
+Primary Responsibility: Data Integrity, ORM Definitions
+
+[Detailed File Information]
+This file defines the relational schema using SQLAlchemy. It ensures data 
+consistency across the platform.
+
+Key Models (Chapters of Data):
+1. `Student`: Stores student UUID, name, email, and paths to biometric templates.
+2. `Course`: Stores course code, department, and faculty information.
+3. `AttendanceSession`: Tracks an active class session (time started, course ID).
+4. `AttendanceRecord`: The junction table linking students to sessions with 
+   verification factor details (face_verified, fingerprint_verified, etc.).
+5. `AttentionLog`: The time-series data storage for student focus. Each entry 
+   contains yaw, pitch, roll, EAR, and an aggregate attention_score.
+
+Database Engine:
+- Uses SQLite for portability and ease of setup.
+- `check_same_thread=False` allows multi-threaded access via FastAPI.
+
+================================================================================
+CHAPTER 5: FACE RECOGNITION ENGINEERING
+================================================================================
+
+File Paths:
+- backend/services/face_recognition.py (High-level service)
+- backend/models/face_model.py (Core algorithm)
+
+[Detailed File Information]
+The system uses a sophisticated hybrid recognition approach.
+
+Methodology:
+1. Detection: Uses YOLOv8 (when available) for fast, robust face localization. 
+   Falls back to Haar Cascades if high-resource modules are missing.
+2. Processing: Images are grayscaled, resized (100x100), and histogram-equalized 
+   to normalize lighting variations.
+3. Core Algorithm: LBPH (Local Binary Patterns Histograms). 
+   - WHY LBPH? It is resilient to lighting changes and allows incremental training 
+     without re-training the entire database every time.
+4. Storage: Models are cached as .yml files in `_model_cache` to ensure instant 
+   startup without full database re-scans.
+
+Key Class: `FaceDetector` (backend/models/face_model.py)
+- `detect_faces_fast`: Performs the geometric search for faces in a frame.
+- `recognize_face`: Compares a face ROI against known LBPH patterns and returns
+  confidence scores (normalized between 0-100).
+- `record_and_extract`: A utility to record a short video and automatically 
+  extract multiple face frames for superior training quality.
+
+================================================================================
+CHAPTER 6: ATTENTION TRACKING & COMPUTER VISION (services/attention.py)
+================================================================================
+
+File Path: backend/services/attention.py
+Primary Responsibility: Gaze Estimation, Drowsiness Detection, Head Pose
+
+[Detailed File Information]
+This module is the AI-driven observability layer of the classroom.
+
+The Attention Metric Bloom:
+The system calculates a 0-100 Focus Score based on:
+1. Head Pose (Yaw/Pitch/Roll): If the head is rotated more than 25 degrees (Yaw) 
+   or 20 degrees (Pitch), it signals distraction.
+2. Eye Aspect Ratio (EAR): Calculates the vertical-to-horizontal ratio of the 
+   eye landmarks. If this drops below 0.21 consistently, it triggers a `is_drowsy` 
+   warning.
+3. Gaze Direction: Analyzes the relative position of the nose tip vs. eye centers
+    to determine if the student is looking at the screen/teacher or away.
+
+Technical Architecture:
+- Framework: MediaPipe Face Mesh (468 landmarks).
+- `analyze_frame`: The core function that outputs `AttentionMetrics` for every 
+  face detected in the image.
+
+================================================================================
+CHAPTER 7: BIOMETRIC & MULTI-FACTOR VERIFICATION (services/biometric.py)
+================================================================================
+
+File Path: backend/services/biometric.py
+Primary Responsibility: Secondary Security Factors
+
+[Detailed File Information]
+Since high-security attendance requires more than just a face (to prevent photo 
+spoofing), this service manages the secondary factors.
+
+Features:
+- Fingerprint Simulation: Uses SHA-256 hashing to simulate the matching of 
+  biometric templates.
+- RFID Layer: Manages 16-character hex tags for student smart cards.
+- Multi-Factor Policy: The service enforces a policy that requires AT LEAST 2 
+  factors (e.g., Face + RFID) to consider a student's verification "VALID" for 
+  the attendance log.
+
+================================================================================
+CHAPTER 8: DATA STORAGE & MANAGEMENT (data/ directory)
+================================================================================
+
+Structure:
+- `backend/data/faces/`: Normalized face crops used for recognition training.
+- `backend/data/smart_campus.db`: The persistent SQLite database file.
+- `backend/models/_model_cache/`: Binary storage for trained LBPH models and 
+  label maps.
+
+Management:
+The backend automatically creates these directories on the first run. Any face 
+images deleted from the file system will lead the system to automatically 
+prune the corresponding LBPH labels upon the next "Reload" command.
+
+================================================================================
+CHAPTER 9: INSTALLATION, DEPLOYMENT & SCALABILITY
+================================================================================
+
+Dependencies (requirements.txt):
+- FastAPI, Uvicorn (Web Layer)
+- SQLAlchemy (DB Layer)
+- OpenCV-contrib-python (Vision Layer)
+- Ultralytics (Deep Learning Layer)
+- MediaPipe (Landmark Layer)
+
+Deployment Strategy:
+- The backend is portable and runs on Windows/Linux/Mac.
+- For scaling to multiple classrooms, the system can be containerized using 
+  Docker, with the `data/` directory mounted as a persistent volume.
+- Performance: On a standard laptop, the backend can process approximate 10-15 
+  frames per second for a classroom of 50 students.
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================

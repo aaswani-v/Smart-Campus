@@ -16,24 +16,16 @@ Images are saved to: _data-face/{person_name}/1.jpg, 2.jpg, 3.jpg, etc.
 
 import cv2
 import os
-import sys
-import traceback
 from pathlib import Path
 
 
 def get_next_image_number(folder_path: Path) -> int:
-    """Get the next available image number in the folder.
-
-    Supports common image extensions and ignores non-numeric filenames.
-    """
-    exts = ("*.jpg", "*.jpeg", "*.png")
-    existing = []
-    for ext in exts:
-        existing.extend(folder_path.glob(ext))
-
+    """Get the next available image number in the folder."""
+    existing = list(folder_path.glob("*.jpg"))
     if not existing:
         return 1
-
+    
+    # Extract numbers from existing files
     numbers = []
     for f in existing:
         try:
@@ -41,7 +33,7 @@ def get_next_image_number(folder_path: Path) -> int:
             numbers.append(num)
         except ValueError:
             continue
-
+    
     return max(numbers, default=0) + 1
 
 
@@ -51,7 +43,7 @@ def main():
     data_folder = script_dir / "_data-face"
     
     # Ensure data folder exists
-    data_folder.mkdir(parents=True, exist_ok=True)
+    data_folder.mkdir(exist_ok=True)
     
     # Get person name
     print("\n" + "="*50)
@@ -74,9 +66,9 @@ def main():
         print("Error: Name cannot be empty!")
         return
     
-    # Create person folder (ensure parents)
+    # Create person folder
     person_folder = data_folder / person_name
-    person_folder.mkdir(parents=True, exist_ok=True)
+    person_folder.mkdir(exist_ok=True)
     
     # Get starting image number
     image_number = get_next_image_number(person_folder)
@@ -89,11 +81,8 @@ def main():
     print("  Q     - Quit")
     print("-"*50 + "\n")
     
-    # Initialize webcam (try DirectShow on Windows for better compatibility)
-    try:
-        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    except Exception:
-        cap = cv2.VideoCapture(0)
+    # Initialize webcam
+    cap = cv2.VideoCapture(0)
     
     if not cap.isOpened():
         print("Error: Could not open webcam!")
@@ -154,38 +143,15 @@ def main():
         key = cv2.waitKey(1) & 0xFF
         
         if key == ord(' '):  # SPACE - capture
-            # Save a flipped copy of the original frame so saved image matches preview
-            save_frame = cv2.flip(frame, 1)
+            # Save the original (non-flipped) frame
+            save_frame = cv2.flip(frame, 1)  # Flip for consistency with display
             filename = person_folder / f"{image_number}.jpg"
-
-            try:
-                success = cv2.imwrite(str(filename), save_frame)
-            except Exception as e:
-                success = False
-                print(f"  ✗ Exception while saving: {e}")
-                traceback.print_exc()
-
-            if success:
-                print(f"  ✓ Captured: {filename.name}")
-                captured_count += 1
-                image_number += 1
-            else:
-                print(f"  ✗ Failed to save image to: {filename}")
-                # Attempt a fallback write using imencode
-                try:
-                    ret, buf = cv2.imencode('.jpg', save_frame)
-                    if ret:
-                        with open(filename, 'wb') as f:
-                            f.write(buf.tobytes())
-                        print(f"  ✓ Saved via fallback: {filename.name}")
-                        captured_count += 1
-                        image_number += 1
-                    else:
-                        print("  ✗ cv2.imencode failed — check write permissions and available disk space")
-                except Exception as e:
-                    print(f"  ✗ Fallback save exception: {e}")
-                    traceback.print_exc()
-
+            cv2.imwrite(str(filename), save_frame)
+            
+            print(f"  ✓ Captured: {filename.name}")
+            captured_count += 1
+            image_number += 1
+            
             # Flash effect
             flash = display_frame.copy()
             cv2.rectangle(flash, (0, 0), (flash.shape[1], flash.shape[0]), (255, 255, 255), -1)

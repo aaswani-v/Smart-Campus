@@ -22,10 +22,43 @@ export function FaceRecognition() {
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isDetecting, setIsDetecting] = useState(false);
+  const [videoConstraints, setVideoConstraints] = useState<MediaTrackConstraints>({ facingMode: 'user' });
   
   // Attendance tracking - debounce to avoid duplicate marks
   const markedAttendance = useRef<Set<string>>(new Set());
   const [attendanceLog, setAttendanceLog] = useState<{name: string; time: string}[]>([]);
+
+  // Enumerate available cameras on mount
+  useEffect(() => {
+    const setupCamera = async () => {
+      try {
+        // First, request permission
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach(track => track.stop()); // Stop immediately, we just needed permission
+        
+        // Now enumerate devices
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === 'videoinput');
+        console.log('[Camera] Found video devices:', videoDevices);
+        
+        if (videoDevices.length > 0) {
+          // Use the first available device
+          setVideoConstraints({ 
+            deviceId: { exact: videoDevices[0].deviceId },
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          });
+        } else {
+          setCameraError('No camera devices found on this system.');
+        }
+      } catch (err) {
+        console.error('[Camera] Setup error:', err);
+        // Fallback to basic constraints
+        setVideoConstraints({ facingMode: 'user' });
+      }
+    };
+    setupCamera();
+  }, []);
 
   // Enrollment State
   const [showEnrollModal, setShowEnrollModal] = useState(false);
@@ -551,7 +584,7 @@ export function FaceRecognition() {
                 ref={webcamRef}
                 audio={false}
                 screenshotFormat="image/jpeg"
-                videoConstraints={{ width: 640, height: 480, facingMode: "user" }}
+                videoConstraints={videoConstraints}
                 style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                 onUserMedia={() => {
                   console.log('Camera ready!');

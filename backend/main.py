@@ -14,6 +14,10 @@ from datetime import datetime
 from typing import List
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 from api.api_routes import router as api_router
 from api.routes.attendance import router as attendance_router
@@ -398,4 +402,5 @@ async def broadcast_attention_update(session_id: str, data: dict):
 # Run with: uvicorn main:app --reload --host 0.0.0.0 --port 8000
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)

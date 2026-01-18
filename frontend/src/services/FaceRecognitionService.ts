@@ -3,9 +3,9 @@
  * This runs entirely in the browser using WebGL acceleration.
  */
 import * as faceapi from 'face-api.js';
+import { API_BASE } from '../config';
 
 const MODEL_URL = '/models'; // Public folder for face-api.js models
-const API_BASE = 'http://localhost:8000';
 
 export interface FaceMatch {
   name: string;

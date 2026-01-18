@@ -3,7 +3,8 @@ import Webcam from 'react-webcam';
 import { ArrowLeft, User, UserPlus, X, Camera, Check, Loader2, FileSpreadsheet } from 'lucide-react';
 import { useNavigate, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import faceRecognitionService, { FaceMatch } from '../services/FaceRecognitionService';
+import faceRecognitionService from '../services/FaceRecognitionService';
+import { API_BASE } from '../config';
 
 interface DetectedFace {
   name: string;
@@ -224,7 +225,7 @@ export function FaceRecognition() {
     setEnrollMessage('Enrolling...');
     
     try {
-      const response = await fetch('http://localhost:8000/api/face-recognition/enroll', {
+      const response = await fetch(`${API_BASE}/api/face-recognition/enroll`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

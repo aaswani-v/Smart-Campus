@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { Camera, CameraOff, CheckCircle, XCircle, Loader2, User } from 'lucide-react'
+import { API_BASE } from '../config'
 
 interface RecognitionResult {
   recognized: boolean
@@ -65,7 +66,7 @@ export default function FaceRecognition({ sessionId, onRecognition, onCapture, m
     setIsProcessing(true)
     try {
       // Call Python face recognition API
-      const response = await fetch('http://localhost:8000/api/face-recognition/recognize', {
+      const response = await fetch(`${API_BASE}/api/face-recognition/recognize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: frameData })

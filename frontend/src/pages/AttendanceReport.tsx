@@ -16,7 +16,7 @@ interface AttendanceSummary {
   matrix: { [person: string]: { [date: string]: boolean } };
 }
 
-const API_BASE = 'http://localhost:8000';
+import { API_BASE } from '../config';
 
 export function AttendanceReport() {
   const navigate = useNavigate();

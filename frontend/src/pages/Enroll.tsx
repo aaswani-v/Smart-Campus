@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Upload, CheckCircle, Loader2, ArrowRight, ArrowLeft, MoreHorizontal, User } from 'lucide-react'
 import FaceRecognition from '../components/FaceRecognition'
 import BiometricPanel from '../components/BiometricPanel'
+import { API_BASE } from '../config'
 
 export default function Enroll() {
   const [step, setStep] = useState(1)
@@ -21,7 +22,7 @@ export default function Enroll() {
     setEnrollError(null)
     
     try {
-      const response = await fetch('http://localhost:8000/api/face-recognition/enroll', {
+      const response = await fetch(`${API_BASE}/api/face-recognition/enroll`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

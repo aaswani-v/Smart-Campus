@@ -13,9 +13,15 @@ import json
 from datetime import datetime
 from typing import List
 import os
+from pathlib import Path
 
-from api.routes import router as api_router
+from api.api_routes import router as api_router
+from api.routes.attendance import router as attendance_router
+from api.routes.faces import router as faces_router
 from models.database import init_db
+
+# Path to face database for static serving
+FACES_DIR = Path(__file__).parent / "models" / "_data-face"
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -158,6 +164,12 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(api_router, prefix="/api")
+app.include_router(attendance_router, prefix="/api/simple-attendance")
+app.include_router(faces_router, prefix="/api/faces")
+
+# Mount face images as static files for frontend training
+if FACES_DIR.exists():
+    app.mount("/static/faces", StaticFiles(directory=str(FACES_DIR)), name="faces")
 
 
 
@@ -177,35 +189,47 @@ class EnrollRequest(BaseModel):
 
 @app.post("/api/face-recognition/enroll")
 async def enroll_student(request: EnrollRequest):
-    """Enroll a new student with face images"""
-    face_service = get_face_service()
+    """Enroll a new student with face images - saves to _data-face folder"""
+    import base64
     
     try:
-        # Decode images
-        decoded_images = []
-        for img_base64 in request.images:
-            img = face_service.decode_base64_image(img_base64)
-            if img is not None:
-                decoded_images.append(img)
+        # Create folder for this person in _data-face
+        person_folder = FACES_DIR / request.name.lower().replace(' ', '_')
+        person_folder.mkdir(parents=True, exist_ok=True)
         
-        if len(decoded_images) < 3:
+        saved_count = 0
+        for i, img_base64 in enumerate(request.images):
+            try:
+                # Remove data URL prefix if present
+                if ',' in img_base64:
+                    img_base64 = img_base64.split(',')[1]
+                
+                # Decode and save image
+                img_data = base64.b64decode(img_base64)
+                img_path = person_folder / f"{i+1}.jpg"
+                with open(img_path, 'wb') as f:
+                    f.write(img_data)
+                saved_count += 1
+            except Exception as e:
+                print(f"Failed to save image {i}: {e}")
+        
+        if saved_count < 3:
             return JSONResponse(
                 status_code=400, 
-                content={"error": f"Need at least 3 valid images, got {len(decoded_images)}"}
+                content={"success": False, "error": f"Only saved {saved_count} images, need at least 3"}
             )
         
-        result = face_service.enroll_student(
-            student_id=request.student_id,
-            name=request.name,
-            images=decoded_images
-        )
-        
-        return result
+        return {
+            "success": True, 
+            "message": f"Enrolled {request.name} with {saved_count} images",
+            "faces_enrolled": saved_count,
+            "folder": str(person_folder)
+        }
         
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 class RecognizeRequest(BaseModel):
     image: str  # Base64 encoded image

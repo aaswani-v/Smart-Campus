@@ -12,6 +12,7 @@
     "@mediapipe/camera_utils": "^0.3.1675466862",
     "@mediapipe/face_detection": "^0.4.1646425229",
     "chart.js": "^4.4.1",
+    "face-api.js": "^0.22.2",
     "framer-motion": "^10.18.0",
     "lucide-react": "^0.303.0",
     "react": "^18.2.0",

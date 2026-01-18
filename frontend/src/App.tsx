@@ -14,6 +14,7 @@ import FacultyDashboard from './pages/FacultyDashboard'
 import StudentRecords from './pages/StudentRecords'
 import StudyMaterials from './pages/StudyMaterials'
 import Notices from './pages/Notices'
+import AttendanceReport from './pages/AttendanceReport'
 
 import { AnimatePresence, motion } from 'framer-motion'
 import './index.css'
@@ -40,6 +41,7 @@ function AppRoutes() {
         <Route path="/records" element={<Layout><PageTransition><StudentRecords /></PageTransition></Layout>} />
         <Route path="/materials" element={<Layout><PageTransition><StudyMaterials /></PageTransition></Layout>} />
         <Route path="/notices" element={<Layout><PageTransition><Notices /></PageTransition></Layout>} />
+        <Route path="/attendance-report" element={<Layout><PageTransition><AttendanceReport /></PageTransition></Layout>} />
 
       </Routes>
     </AnimatePresence>

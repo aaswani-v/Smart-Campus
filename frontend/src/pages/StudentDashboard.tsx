@@ -1,6 +1,7 @@
 
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
+import { useNavigate } from "react-router-dom";
 import {
   Fingerprint,
   ScanFace,
@@ -8,11 +9,13 @@ import {
   FileWarning,
   ClipboardList,
   Megaphone,
-  User
+  User,
+  Radar
 } from "lucide-react";
 import "./FacultyDashboard.css"; // Reuse CSS
 
 export default function StudentDashboard() {
+  const navigate = useNavigate();
   const [userName, setUserName] = useState("Student");
   const [notices, setNotices] = useState([]);
   const [showBiometric, setShowBiometric] = useState(false);
@@ -80,12 +83,15 @@ export default function StudentDashboard() {
             <p style={{ color: 'var(--text-secondary)', marginBottom: '1rem' }}>Verify your identity for exam entry.</p>
             
             {!showBiometric ? (
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
                     <button className="btn-secondary" onClick={() => { setShowBiometric(true); setBioStep(0); }}>
                         <Fingerprint size={24} style={{ marginBottom: 5 }} /> <br/> Touch ID
                     </button>
-                    <button className="btn-secondary" onClick={() => { setShowBiometric(true); setBioStep(0); }}>
+                    <button className="btn-secondary" onClick={() => navigate('/face-recognition')}>
                         <ScanFace size={24} style={{ marginBottom: 5 }} /> <br/> Face ID
+                    </button>
+                    <button className="btn-secondary" onClick={() => navigate('/session')}>
+                        <Radar size={24} style={{ marginBottom: 5 }} /> <br/> Radar
                     </button>
                 </div>
             ) : (

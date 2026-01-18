@@ -1,19 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Webcam from 'react-webcam';
-import { ArrowLeft, User, UserPlus, X, Camera, Check, Loader2 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { ArrowLeft, User, UserPlus, X, Camera, Check, Loader2, FileSpreadsheet } from 'lucide-react';
+import { useNavigate, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-// @ts-ignore
-import { FaceDetection } from '@mediapipe/face_detection';
-// @ts-ignore
-import { Camera as MediaPipeCamera } from '@mediapipe/camera_utils';
+import faceRecognitionService, { FaceMatch } from '../services/FaceRecognitionService';
 
 interface DetectedFace {
-  bbox: { x: number; y: number; w: number; h: number };
   name: string;
   confidence: number;
+  box: { x: number; y: number; width: number; height: number };
   recognized: boolean;
-  student_id: string | null;
 }
 
 export function FaceRecognition() {
@@ -21,9 +17,48 @@ export function FaceRecognition() {
   const webcamRef = useRef<Webcam>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [detectedFaces, setDetectedFaces] = useState<DetectedFace[]>([]);
-  const ws = useRef<WebSocket | null>(null);
-  const lastSentTime = useRef<number>(0);
-  const RECOGNITION_INTERVAL = 500;
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadingStatus, setLoadingStatus] = useState('Initializing...');
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isDetecting, setIsDetecting] = useState(false);
+  const [videoConstraints, setVideoConstraints] = useState<MediaTrackConstraints>({ facingMode: 'user' });
+  
+  // Attendance tracking - debounce to avoid duplicate marks
+  const markedAttendance = useRef<Set<string>>(new Set());
+  const [attendanceLog, setAttendanceLog] = useState<{name: string; time: string}[]>([]);
+
+  // Enumerate available cameras on mount
+  useEffect(() => {
+    const setupCamera = async () => {
+      try {
+        // First, request permission
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach(track => track.stop()); // Stop immediately, we just needed permission
+        
+        // Now enumerate devices
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === 'videoinput');
+        console.log('[Camera] Found video devices:', videoDevices);
+        
+        if (videoDevices.length > 0) {
+          // Use the first available device
+          setVideoConstraints({ 
+            deviceId: { exact: videoDevices[0].deviceId },
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          });
+        } else {
+          setCameraError('No camera devices found on this system.');
+        }
+      } catch (err) {
+        console.error('[Camera] Setup error:', err);
+        // Fallback to basic constraints
+        setVideoConstraints({ facingMode: 'user' });
+      }
+    };
+    setupCamera();
+  }, []);
 
   // Enrollment State
   const [showEnrollModal, setShowEnrollModal] = useState(false);
@@ -33,8 +68,120 @@ export function FaceRecognition() {
   const [isCapturing, setIsCapturing] = useState(false);
   const [enrollStatus, setEnrollStatus] = useState<'idle' | 'capturing' | 'submitting' | 'success' | 'error'>('idle');
   const [enrollMessage, setEnrollMessage] = useState('');
-  const [cameraReady, setCameraReady] = useState(false);
-  const [cameraError, setCameraError] = useState<string | null>(null);
+
+  // Initialize face-api.js service
+  useEffect(() => {
+    const initService = async () => {
+      try {
+        setLoadingStatus('Loading AI models...');
+        await faceRecognitionService.loadModels();
+        
+        setLoadingStatus('Loading face database...');
+        await faceRecognitionService.loadFaceDatabase();
+        
+        setIsLoading(false);
+        setLoadingStatus('Ready!');
+      } catch (error) {
+        console.error('Failed to initialize face service:', error);
+        setLoadingStatus('Failed to load. Check console.');
+      }
+    };
+    initService();
+  }, []);
+
+  // Detection loop - runs when camera is ready and service is loaded
+  useEffect(() => {
+    if (!cameraReady || isLoading || !webcamRef.current?.video) return;
+    
+    let animationId: number;
+    let lastDetectionTime = 0;
+    const DETECTION_INTERVAL = 300; // ms between detections
+    
+    const detectLoop = async (timestamp: number) => {
+      if (timestamp - lastDetectionTime > DETECTION_INTERVAL) {
+        lastDetectionTime = timestamp;
+        
+        if (webcamRef.current?.video && faceRecognitionService.isReady()) {
+          setIsDetecting(true);
+          
+          try {
+            const matches = await faceRecognitionService.detectFaces(webcamRef.current.video);
+            
+            // Convert to our format and draw
+            const faces: DetectedFace[] = matches.map(m => ({
+              name: m.name,
+              confidence: Math.round((1 - m.distance) * 100),
+              box: m.box,
+              recognized: m.name !== 'Unknown'
+            }));
+            
+            setDetectedFaces(faces);
+            drawDetections(faces);
+            
+            // Mark attendance for recognized faces (debounced)
+            for (const face of faces) {
+              if (face.recognized && !markedAttendance.current.has(face.name)) {
+                markedAttendance.current.add(face.name);
+                const success = await faceRecognitionService.markAttendance(face.name);
+                if (success) {
+                  setAttendanceLog(prev => [...prev, { 
+                    name: face.name, 
+                    time: new Date().toLocaleTimeString() 
+                  }]);
+                }
+              }
+            }
+          } catch (e) {
+            console.error('Detection error:', e);
+          }
+          
+          setIsDetecting(false);
+        }
+      }
+      
+      animationId = requestAnimationFrame(detectLoop);
+    };
+    
+    animationId = requestAnimationFrame(detectLoop);
+    
+    return () => {
+      if (animationId) cancelAnimationFrame(animationId);
+    };
+  }, [cameraReady, isLoading]);
+
+  // Draw bounding boxes on canvas
+  const drawDetections = (faces: DetectedFace[]) => {
+    const canvas = canvasRef.current;
+    const video = webcamRef.current?.video;
+    if (!canvas || !video) return;
+    
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    faces.forEach(face => {
+      const { x, y, width, height } = face.box;
+      
+      // Draw box
+      ctx.strokeStyle = face.recognized ? '#22c55e' : '#ff6b35';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x, y, width, height);
+      
+      // Draw label background
+      const label = `${face.name} (${face.confidence}%)`;
+      ctx.font = 'bold 14px Inter, sans-serif';
+      const textWidth = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(x, y - 28, textWidth + 16, 24);
+      
+      // Draw label text
+      ctx.fillStyle = '#fff';
+      ctx.fillText(label, x + 8, y - 10);
+    });
+  };
 
   // Capture frames for enrollment
   const captureFrames = useCallback(async () => {
@@ -47,7 +194,7 @@ export function FaceRecognition() {
     const frames: string[] = [];
     
     for (let i = 0; i < 5; i++) {
-      await new Promise(resolve => setTimeout(resolve, 600)); // Wait 600ms between captures
+      await new Promise(resolve => setTimeout(resolve, 600));
       const imageSrc = webcamRef.current?.getScreenshot();
       if (imageSrc) {
         frames.push(imageSrc);
@@ -114,92 +261,6 @@ export function FaceRecognition() {
     setEnrollMessage('');
   };
 
-  // Initialize WebSocket for Recognition Only
-  useEffect(() => {
-    ws.current = new WebSocket('ws://localhost:8000/api/face-recognition/ws');
-    
-    ws.current.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.faces && data.faces.length > 0) {
-        setDetectedFaces(data.faces); 
-      }
-    };
-
-    return () => {
-      ws.current?.close();
-    };
-  }, []);
-
-  // Initialize MediaPipe - waits for camera to be ready
-  useEffect(() => {
-    if (!cameraReady || !webcamRef.current?.video) {
-      return;
-    }
-
-    const faceDetection = new FaceDetection({
-      locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
-    });
-
-    faceDetection.setOptions({
-      model: 'short',
-      minDetectionConfidence: 0.5
-    });
-
-    faceDetection.onResults((results: any) => {
-        const videoWidth = webcamRef.current?.video?.videoWidth;
-        const videoHeight = webcamRef.current?.video?.videoHeight;
-        const canvas = canvasRef.current;
-        
-        if (canvas && videoWidth && videoHeight && results.detections) {
-            canvas.width = videoWidth;
-            canvas.height = videoHeight;
-            const ctx = canvas.getContext('2d');
-            
-            if (ctx) {
-                ctx.clearRect(0, 0, videoWidth, videoHeight);
-                
-                results.detections.forEach((detection: any) => {
-                    const bbox = detection.boundingBox;
-                    const x = bbox.xCenter * videoWidth - (bbox.width * videoWidth) / 2;
-                    const y = bbox.yCenter * videoHeight - (bbox.height * videoHeight) / 2;
-                    const w = bbox.width * videoWidth;
-                    const h = bbox.height * videoHeight;
-
-                    ctx.strokeStyle = '#22c55e';
-                    ctx.lineWidth = 3;
-                    ctx.strokeRect(x, y, w, h);
-                });
-            }
-        }
-
-        const now = Date.now();
-        if (results.detections.length > 0 && now - lastSentTime.current > RECOGNITION_INTERVAL) {
-             if (webcamRef.current && ws.current && ws.current.readyState === WebSocket.OPEN) {
-                const imageSrc = webcamRef.current.getScreenshot();
-                if (imageSrc) {
-                    ws.current.send(JSON.stringify({ image: imageSrc }));
-                    lastSentTime.current = now;
-                }
-             }
-        }
-    });
-
-    const camera = new MediaPipeCamera(webcamRef.current.video, {
-        onFrame: async () => {
-            if (webcamRef.current?.video) {
-                await faceDetection.send({image: webcamRef.current.video});
-            }
-        },
-        width: 640,
-        height: 480
-    });
-    camera.start();
-    
-    return () => {
-      camera.stop();
-    };
-  }, [cameraReady]);
-
   return (
     <div style={{ padding: 'var(--space-md) var(--space-lg)', height: 'calc(100vh - 80px)', display: 'flex', flexDirection: 'column', maxWidth: '100vw', margin: '0', overflow: 'hidden', boxSizing: 'border-box' }}>
       
@@ -231,31 +292,58 @@ export function FaceRecognition() {
                     Facial Recognition
                 </h1>
                 <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent-green)', boxShadow: '0 0 8px var(--accent-green)' }}></div>
-                    Client-Side AI Active
+                    <div style={{ 
+                      width: 6, height: 6, borderRadius: '50%', 
+                      background: isLoading ? 'var(--accent-orange)' : faceRecognitionService.isReady() ? 'var(--accent-green)' : 'var(--text-muted)', 
+                      boxShadow: isLoading ? '0 0 8px var(--accent-orange)' : faceRecognitionService.isReady() ? '0 0 8px var(--accent-green)' : 'none',
+                      animation: isLoading ? 'pulse 1s infinite' : 'none'
+                    }}></div>
+                    {isLoading ? loadingStatus : `face-api.js • ${faceRecognitionService.getEnrolledPeople().length} enrolled`}
                 </div>
             </div>
         </div>
 
-        {/* Enroll Button */}
-        <button
-          onClick={() => setShowEnrollModal(true)}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            padding: '10px 20px',
-            background: 'linear-gradient(135deg, var(--accent-orange), #e85d04)',
-            border: 'none',
-            borderRadius: '12px',
-            color: '#fff',
-            fontWeight: 600,
-            fontSize: '0.875rem',
-            cursor: 'pointer',
-            boxShadow: '0 4px 12px rgba(255, 107, 53, 0.3)'
-          }}
-        >
-          <UserPlus size={18} />
-          Enroll Face
-        </button>
+        <div style={{ display: 'flex', gap: 'var(--space-sm)' }}>
+          {/* Attendance Report Link */}
+          <Link
+            to="/attendance-report"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '10px 20px',
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '12px',
+              color: 'var(--text-primary)',
+              fontWeight: 600,
+              fontSize: '0.875rem',
+              cursor: 'pointer',
+              textDecoration: 'none'
+            }}
+          >
+            <FileSpreadsheet size={18} />
+            Attendance Report
+          </Link>
+          
+          {/* Enroll Button */}
+          <button
+            onClick={() => setShowEnrollModal(true)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '10px 20px',
+              background: 'linear-gradient(135deg, var(--accent-orange), #e85d04)',
+              border: 'none',
+              borderRadius: '12px',
+              color: '#fff',
+              fontWeight: 600,
+              fontSize: '0.875rem',
+              cursor: 'pointer',
+              boxShadow: '0 4px 12px rgba(255, 107, 53, 0.3)'
+            }}
+          >
+            <UserPlus size={18} />
+            Enroll Face
+          </button>
+        </div>
       </motion.div>
 
       {/* Enrollment Modal */}
@@ -289,7 +377,6 @@ export function FaceRecognition() {
                 boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)'
               }}
             >
-              {/* Modal Header */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
                 <h2 style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-primary)' }}>
                   Enroll New Face
@@ -302,7 +389,6 @@ export function FaceRecognition() {
                 </button>
               </div>
 
-              {/* Form */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '24px' }}>
                 <div>
                   <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px', display: 'block' }}>
@@ -350,7 +436,6 @@ export function FaceRecognition() {
                 </div>
               </div>
 
-              {/* Captured Frames Preview */}
               {capturedFrames.length > 0 && (
                 <div style={{ marginBottom: '16px' }}>
                   <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '8px' }}>
@@ -369,7 +454,6 @@ export function FaceRecognition() {
                 </div>
               )}
 
-              {/* Status Message */}
               {enrollMessage && (
                 <div style={{ 
                   padding: '12px 16px', 
@@ -383,7 +467,6 @@ export function FaceRecognition() {
                 </div>
               )}
 
-              {/* Action Buttons */}
               <div style={{ display: 'flex', gap: '12px' }}>
                 <button
                   onClick={captureFrames}
@@ -428,6 +511,22 @@ export function FaceRecognition() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Loading Overlay */}
+      {isLoading && (
+        <div style={{
+          position: 'absolute',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center',
+          zIndex: 50
+        }}>
+          <Loader2 size={48} style={{ color: 'var(--accent-orange)', animation: 'spin 1s linear infinite' }} />
+          <div style={{ marginTop: 16, color: 'var(--text-primary)', fontWeight: 600 }}>{loadingStatus}</div>
+        </div>
+      )}
 
       {/* Main Content Grid */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 'var(--space-lg)', flex: 1, minHeight: 0 }}>
@@ -485,7 +584,7 @@ export function FaceRecognition() {
                 ref={webcamRef}
                 audio={false}
                 screenshotFormat="image/jpeg"
-                videoConstraints={{ width: 640, height: 480, facingMode: "user" }}
+                videoConstraints={videoConstraints}
                 style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                 onUserMedia={() => {
                   console.log('Camera ready!');
@@ -499,36 +598,25 @@ export function FaceRecognition() {
             )}
             <canvas 
                 ref={canvasRef}
-                style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'contain' }}
+                style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none' }}
             />
             
-            {detectedFaces.map((face, i) => (
-                 <div
-                    key={i}
-                    style={{
-                        position: 'absolute',
-                        left: `${face.bbox.x}px`, 
-                        top: `${face.bbox.y - 40}px`,
-                        transform: 'translateX(0)',
-                        background: 'rgba(0,0,0,0.8)',
-                        backdropFilter: 'blur(8px)',
-                        padding: '6px 16px',
-                        borderRadius: '20px',
-                        border: `1px solid ${face.recognized ? 'var(--accent-green)' : 'var(--accent-orange)'}`,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        whiteSpace: 'nowrap',
-                        zIndex: 30
-                    }}
-                 >
-                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: face.recognized ? 'var(--accent-green)' : 'var(--accent-orange)' }}></div>
-                    <span style={{ color: '#fff', fontSize: '0.875rem', fontWeight: 600 }}>{face.name}</span>
-                    <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: '0.75rem', borderLeft: '1px solid rgba(255,255,255,0.2)', paddingLeft: 8, marginLeft: 4 }}>
-                        {Math.round(face.confidence)}%
-                    </span>
-                 </div>
-            ))}
+            {/* Detection indicator */}
+            {isDetecting && (
+              <div style={{
+                position: 'absolute',
+                top: 16, right: 16,
+                padding: '6px 12px',
+                background: 'rgba(0,0,0,0.6)',
+                borderRadius: '20px',
+                display: 'flex', alignItems: 'center', gap: 6,
+                fontSize: '0.75rem',
+                color: 'var(--accent-green)'
+              }}>
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent-green)', animation: 'pulse 1s infinite' }}></div>
+                Detecting...
+              </div>
+            )}
         </motion.div>
 
         {/* Info Sidebar */}
@@ -540,20 +628,20 @@ export function FaceRecognition() {
                 style={{ background: 'var(--bg-elevated)', borderRadius: '20px', padding: '24px', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-lg)' }}
             >
                 <div style={{ textTransform: 'uppercase', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.1em', color: 'var(--text-muted)', marginBottom: '16px' }}>
-                    Attendance Metrics
+                    Live Detection
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
                      <div style={{ background: 'var(--bg-card)', padding: '16px', borderRadius: '16px', border: '1px solid var(--border-light)' }}>
                         <div style={{ fontSize: '2rem', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1, marginBottom: 4 }}>
                             {detectedFaces.length}
                         </div>
-                        <div style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text-secondary)' }}>Visible</div>
+                        <div style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text-secondary)' }}>Faces</div>
                      </div>
                      <div style={{ background: 'var(--bg-card)', padding: '16px', borderRadius: '16px', border: '1px solid var(--border-light)' }}>
                         <div style={{ fontSize: '2rem', fontWeight: 800, color: 'var(--accent-green)', lineHeight: 1, marginBottom: 4 }}>
                             {detectedFaces.filter(f => f.recognized).length}
                         </div>
-                        <div style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text-secondary)' }}>Marked</div>
+                        <div style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text-secondary)' }}>Recognized</div>
                      </div>
                 </div>
             </motion.div>
@@ -566,30 +654,33 @@ export function FaceRecognition() {
             >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                     <div style={{ textTransform: 'uppercase', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.1em', color: 'var(--text-muted)' }}>
-                        Attendance Log
+                        Session Attendance ({attendanceLog.length})
                     </div>
                 </div>
 
                 <div style={{ flex: 1, overflowY: 'auto', paddingRight: 4 }}>
-                    {detectedFaces.length === 0 ? (
+                    {attendanceLog.length === 0 ? (
                         <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', opacity: 0.5, textAlign: 'center' }}>
                             <User size={32} strokeWidth={1.5} style={{ marginBottom: 12, opacity: 0.5 }} />
-                            <div style={{ fontSize: '0.875rem', fontWeight: 500 }}>No Attendance to Mark</div>
+                            <div style={{ fontSize: '0.875rem', fontWeight: 500 }}>No attendance marked yet</div>
+                            <div style={{ fontSize: '0.75rem', marginTop: 4 }}>Face the camera to mark attendance</div>
                         </div>
                     ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                            {detectedFaces.map((face, i) => (
+                            {attendanceLog.map((entry, i) => (
                                 <motion.div 
                                     key={i}
+                                    initial={{ opacity: 0, x: -10 }}
+                                    animate={{ opacity: 1, x: 0 }}
                                     style={{ padding: '12px 16px', background: 'var(--bg-card)', borderRadius: '12px', border: '1px solid var(--border-light)', display: 'flex', alignItems: 'center', gap: '12px' }}
                                 >
-                                    <div style={{ width: 32, height: 32, borderRadius: '50%', background: face.recognized ? 'rgba(34, 197, 94, 0.1)' : 'rgba(255, 107, 53, 0.1)', color: face.recognized ? 'var(--accent-green)' : 'var(--accent-orange)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                        <User size={16} />
+                                    <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'rgba(34, 197, 94, 0.1)', color: 'var(--accent-green)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                        <Check size={16} />
                                     </div>
                                     <div style={{ flex: 1 }}>
-                                        <div style={{ fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-primary)' }}>{face.name}</div>
+                                        <div style={{ fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-primary)' }}>{entry.name}</div>
                                         <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                            {face.recognized ? 'Marked Present' : 'Unknown ID'}
+                                            Marked at {entry.time}
                                         </div>
                                     </div>
                                 </motion.div>
@@ -600,8 +691,19 @@ export function FaceRecognition() {
             </motion.div>
         </div>
       </div>
+      
+      <style>{`
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+      `}</style>
     </div>
   );
 }
-export default FaceRecognition;
 
+export default FaceRecognition;
